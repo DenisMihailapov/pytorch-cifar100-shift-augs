@@ -144,6 +144,7 @@ class ResNet(nn.Module):
 
         return output
 
+
 class BlurPool(nn.Module):
     def __init__(self, channels, pad_type='reflect', filt_size=4, stride=2, pad_off=0):
         super(BlurPool, self).__init__()
@@ -202,20 +203,26 @@ def get_pad_layer(pad_type):
 
     return PadLayer
 
+
 class ConvBlock(nn.Sequential):
-    def __init__(self, in_channels, out_channels, 
-                 kernel_size=3, stride=1, padding=0, 
-                 bp_filt_size=None, use_relu=True, bias=False):
-        
+    def __init__(self, in_channels, out_channels,
+                 kernel_size=3, stride=1, padding=0,
+                 bp_filt_size=None, merge_conv_bp=False, use_relu=True, bias=False):
+
         blocks = []
         if stride != 1 and bp_filt_size is not None:
-            blocks.append(
-                nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=padding, bias=bias)
-            )
-            blocks.append(
-                BlurPool(out_channels, filt_size=bp_filt_size, stride=stride)
-            )
-            
+            if merge_conv_bp:
+                blocks.append(
+                    nn.Conv2d(
+                        in_channels, out_channels, kernel_size + bp_filt_size - 1,
+                        stride, padding=padding + 1, bias=bias
+                    )
+                )
+            else:
+                blocks.extend([
+                    nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=padding, bias=bias),
+                    BlurPool(out_channels, filt_size=bp_filt_size, stride=stride)
+                ])
         else:
             blocks.append(nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding=padding, bias=bias))
 
@@ -264,7 +271,8 @@ class BasicBlockCB(nn.Module):
         self.residual_function = nn.Sequential(
             # TODO: This convert to BlurPool (if stride == 2)
             ConvBlock(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bp_filt_size=bp_filt_size),
-            ConvBlock(out_channels, out_channels * BasicBlock.expansion, kernel_size=3, padding=1, bias=False, use_relu=False),
+            ConvBlock(out_channels, out_channels * BasicBlock.expansion, kernel_size=3, padding=1, bias=False,
+                      use_relu=False),
             # No ReLU (no convert to BlurPool)
         )
 
@@ -275,7 +283,8 @@ class BasicBlockCB(nn.Module):
         # use 1*1 convolution to match the dimension
         if stride != 1 or in_channels != BasicBlock.expansion * out_channels:
             self.shortcut = nn.Sequential(
-                ConvBlock(in_channels, out_channels * BasicBlock.expansion, kernel_size=1, stride=stride, bias=False, use_relu=False),
+                ConvBlock(in_channels, out_channels * BasicBlock.expansion, kernel_size=1, stride=stride, bias=False,
+                          use_relu=False),
                 # No ReLU (no convert to BlurPool)
             )
 
@@ -301,7 +310,8 @@ class BottleNeckCB(nn.Module):
 
         if stride != 1 or in_channels != out_channels * BottleNeckCB.expansion:
             self.shortcut = nn.Sequential(
-                ConvBlock(in_channels, out_channels * BottleNeckCB.expansion, stride=stride, kernel_size=1, bias=False, use_relu=False),
+                ConvBlock(in_channels, out_channels * BottleNeckCB.expansion, stride=stride, kernel_size=1, bias=False,
+                          use_relu=False),
                 # No ReLU (no convert to BlurPool)
             )
 
