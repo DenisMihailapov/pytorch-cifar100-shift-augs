@@ -3,10 +3,11 @@
 author baiyu
 """
 import datetime
-import numpy
 import os
 import re
 import sys
+
+import numpy
 import torchvision.transforms as transforms
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import DataLoader
@@ -61,7 +62,7 @@ def get_network(args):
         net = xception()
     elif args.net == 'resnet18':
         from models.resnet import resnet18 
-        net = resnet18(args.bp_filt_size) 
+        net = resnet18(args.bp_filt_size, args.merge_conv_bp)
     elif args.net == 'resnet34':
         from models.resnet import resnet34
         net = resnet34()

@@ -234,6 +234,7 @@ if __name__ == '__main__':
     parser.add_argument('-avg-cross-loss-weight', default=1.0, type=float, help='avg cross loss weight')
 
     parser.add_argument('-bp-filt-size', type=int, default=None, help='')
+    parser.add_argument('-merge-conv-bp', action='store_true', help='merge Conv2d and BlurPool')
 
     parser.add_argument('-teacher', type=str, default='', help='name of folder with model')
     parser.add_argument('-distil-function', default='l2', type=str, help='distillation function')
@@ -265,7 +266,8 @@ if __name__ == '__main__':
     exp_name = args.net
 
     if args.bp_filt_size:
-        exp_name += f"_lpf{args.bp_filt_size}_conv_bp"
+        mode = "conv_bp" if args.merge_conv_bp else "conv_bp"
+        exp_name += f"_lpf{args.bp_filt_size}_{mode}"
 
     exp_name += f"_x{args.multiply_data}_data"
 

@@ -207,7 +207,9 @@ def get_pad_layer(pad_type):
 class ConvBlock(nn.Sequential):
     def __init__(self, in_channels, out_channels,
                  kernel_size=3, stride=1, padding=0,
-                 bp_filt_size=None, merge_conv_bp=False, use_relu=True, bias=False):
+                 bp_filt_size=None, merge_conv_bp=False,
+                 use_relu=True, bias=False
+                 ):
 
         blocks = []
         if stride != 1 and bp_filt_size is not None:
@@ -264,13 +266,16 @@ class BasicBlockCB(nn.Module):
     # to distinct
     expansion = 1
 
-    def __init__(self, in_channels, out_channels, stride=1, bp_filt_size=None):
+    def __init__(self, in_channels, out_channels, stride=1, bp_filt_size=None, merge_conv_bp=False):
         super().__init__()
 
         # residual function
         self.residual_function = nn.Sequential(
             # TODO: This convert to BlurPool (if stride == 2)
-            ConvBlock(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bp_filt_size=bp_filt_size),
+            ConvBlock(
+                in_channels, out_channels, kernel_size=3, stride=stride, padding=1,
+                bp_filt_size=bp_filt_size, merge_conv_bp=merge_conv_bp
+            ),
             ConvBlock(out_channels, out_channels * BasicBlock.expansion, kernel_size=3, padding=1, bias=False,
                       use_relu=False),
             # No ReLU (no convert to BlurPool)
@@ -297,11 +302,14 @@ class BottleNeckCB(nn.Module):
     """
     expansion = 4
 
-    def __init__(self, in_channels, out_channels, stride=1, bp_filt_size=3):
+    def __init__(self, in_channels, out_channels, stride=1, bp_filt_size=3, merge_conv_bp=False):
         super().__init__()
         self.residual_function = nn.Sequential(
             ConvBlock(in_channels, out_channels, kernel_size=1),
-            ConvBlock(in_channels, out_channels, stride=stride, kernel_size=3, padding=1, bp_filt_size=bp_filt_size),
+            ConvBlock(
+                in_channels, out_channels, stride=stride, kernel_size=3, padding=1,
+                bp_filt_size=bp_filt_size, merge_conv_bp=merge_conv_bp
+            ),
             ConvBlock(out_channels, out_channels * BottleNeckCB.expansion, kernel_size=1, bias=False, use_relu=False),
             # No ReLU (no convert to BlurPool)
         )
@@ -321,11 +329,12 @@ class BottleNeckCB(nn.Module):
 
 class ResNetCB(nn.Module):  # TODO: union with ResNet class
 
-    def __init__(self, block, num_block, num_classes=100, bp_filt_size=None):
+    def __init__(self, block, num_block, num_classes=100, bp_filt_size=None, merge_conv_bp=False):
         super().__init__()
 
         self.in_channels = 64
         self.bp_filt_size = bp_filt_size
+        self.merge_conv_bp = merge_conv_bp
 
         self.conv1 = nn.Sequential(
             ConvBlock(3, 64, kernel_size=3, padding=1),
@@ -361,7 +370,12 @@ class ResNetCB(nn.Module):  # TODO: union with ResNet class
         strides = [stride] + [1] * (num_blocks - 1)
         layers = []
         for stride in strides:
-            layers.append(block(self.in_channels, out_channels, stride, bp_filt_size=self.bp_filt_size))
+            layers.append(
+                block(
+                    self.in_channels, out_channels, stride,
+                    bp_filt_size=self.bp_filt_size, merge_conv_bp=self.merge_conv_bp
+                )
+            )
             self.in_channels = out_channels * block.expansion
 
         return nn.Sequential(*layers)
@@ -379,19 +393,19 @@ class ResNetCB(nn.Module):  # TODO: union with ResNet class
         return output
 
 
-def resnet18_conv_blocks(bp_filt_size=None):
+def resnet18_conv_blocks(bp_filt_size=None, merge_conv_bp=False):
     """ return a ResNet 18 object
     """
-    return ResNetCB(BasicBlockCB, [2, 2, 2, 2], bp_filt_size=bp_filt_size)
+    return ResNetCB(BasicBlockCB, [2, 2, 2, 2], bp_filt_size=bp_filt_size, merge_conv_bp=merge_conv_bp)
 
 
-def resnet18(bp_filt_size=None):
+def resnet18(bp_filt_size=None, merge_conv_bp=False):
     """ return a ResNet 18 object
     """
     if bp_filt_size:
         print(f"Use resnet18 with BlurPool {bp_filt_size}")
         time.sleep(1.5)
-        return resnet18_conv_blocks(bp_filt_size)
+        return resnet18_conv_blocks(bp_filt_size, merge_conv_bp)
 
     return ResNet(BasicBlock, [2, 2, 2, 2])
 
