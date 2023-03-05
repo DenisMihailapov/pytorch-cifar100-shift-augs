@@ -265,7 +265,7 @@ if __name__ == '__main__':
     exp_name = args.net
 
     if args.bp_filt_size:
-        exp_name += f"_lpf{args.bp_filt_size}"
+        exp_name += f"_lpf{args.bp_filt_size}_conv_bp"
 
     exp_name += f"_x{args.multiply_data}_data"
 
