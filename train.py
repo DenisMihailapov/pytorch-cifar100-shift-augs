@@ -266,7 +266,7 @@ if __name__ == '__main__':
     exp_name = args.net
 
     if args.bp_filt_size:
-        mode = "conv_bp" if args.merge_conv_bp else "conv_bp"
+        mode = "merge_conv_bp" if args.merge_conv_bp else "conv_bp"
         exp_name += f"_lpf{args.bp_filt_size}_{mode}"
 
     exp_name += f"_x{args.multiply_data}_data"
