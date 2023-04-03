@@ -16,13 +16,19 @@ def stability_score(diag_probs):
 def stat_probs_from_folder(folder_path: str, mean_by_sampels=True, index=None) -> Tuple[np.ndarray]:
     
     folder_path = Path(folder_path)
-    
-    # do our correct class prob. more confidence (diff seeds)
-    confid_diag_probas = np.stack([
-        np.load(m_folder / 'diag_probs.npy')
-        for m_folder in sorted(folder_path.iterdir())
-        if m_folder.is_dir()
-    ])
+
+    if (folder_path / 'confid_diag_probas.npz').is_file():
+        confid_diag_probas = np.load(folder_path / 'confid_diag_probas.npy')
+        
+    else:
+        # do our correct class prob. more confidence (diff seeds)
+        confid_diag_probas = np.stack([
+            np.load(m_folder / 'diag_probs.npy')
+            for m_folder in sorted(folder_path.iterdir())
+            if m_folder.is_dir()
+        ])
+        confid_diag_probas = confid_diag_probas[:, [12]*3]
+        confid_diag_probas = confid_diag_probas.mean(axis=1 if mean_by_sampels else 0)
     
     # if index is None:
     #     stability_scores = stability_score(confid_diag_probas)
