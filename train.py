@@ -6,13 +6,11 @@
 author baiyu
 """
 
-import argparse
 import os
 import random
 import time
 import warnings
 from itertools import combinations
-from pathlib import Path
 from pprint import pprint
 
 import torch
@@ -22,14 +20,14 @@ from torch.backends import cudnn
 from torch.nn.functional import kl_div
 from torch.utils.tensorboard import SummaryWriter
 
-from conf import settings
+from conf import get_args
+from conf import get_experiment_name
+from conf import settings, get_checkpoint_path
+from datasets import get_dataloaders
 from utils import WarmUpLR
 from utils import best_acc_weights
 from utils import get_network
-from utils import get_test_dataloader
-from utils import get_training_dataloader
 from utils import last_epoch
-from utils import most_recent_folder
 from utils import most_recent_weights
 from validate_utils import AverageMeter
 
@@ -70,7 +68,7 @@ def grad_logging(net, n_iter):
             writer.add_scalar('LastLayerGradients/grad_norm2_bias', param.grad.norm(), n_iter)
 
 
-def train(net, epoch):
+def train(net, dataloader, epoch):
     start = time.time()
     net.train()
 
@@ -78,7 +76,7 @@ def train(net, epoch):
     student_losses = AverageMeter()
     cross_losses = AverageMeter()
 
-    for batch_index, (images, labels) in enumerate(cifar100_training_loader):
+    for batch_index, (images, labels) in enumerate(dataloader):
 
         labels = torch.cat(labels, 0)
         images = torch.cat(images, 0)
@@ -120,11 +118,11 @@ def train(net, epoch):
         loss.backward()
         optimizer.step()
 
-        n_iter = (epoch - 1) * len(cifar100_training_loader) + batch_index + 1
+        n_iter = (epoch - 1) * len(dataloader) + batch_index + 1
 
         print(
             f'Training Epoch: {epoch} '
-            f'[{batch_index * args.b + len(images)}/{len(cifar100_training_loader) * args.b}]\t'
+            f'[{batch_index * args.b + len(images)}/{len(dataloader) * args.b}]\t'
             f'LR: {optimizer.param_groups[0]["lr"]:0.6f}\n'
         )
 
@@ -160,14 +158,15 @@ def train(net, epoch):
 
 
 @torch.no_grad()
-def eval_training(net, epoch=0, tb=True):
+def eval_training(net, dataloader, epoch=0, tb=True):
     start = time.time()
     net.eval()
 
+    n_sampels = len(dataloader.dataset)
     test_losses = AverageMeter()
     correct = 0.0
 
-    for (images, labels) in cifar100_test_loader:
+    for (images, labels) in dataloader:
 
         if args.gpu:
             images = images.cuda()
@@ -188,7 +187,7 @@ def eval_training(net, epoch=0, tb=True):
     print(
         f'Test set: Epoch: {epoch},'
         f'Average loss: {test_losses.avg:.4f},'
-        f'Accuracy: {correct.float() / len(cifar100_test_loader.dataset):.4f},'
+        f'Accuracy: {correct.float() / n_sampels:.4f},'
         f'Time consumed:{finish - start:.2f}s'
         '\n'
     )
@@ -196,180 +195,38 @@ def eval_training(net, epoch=0, tb=True):
     # add informations to tensorboard
     if tb:
         writer.add_scalar('Test/Average loss', test_losses.avg, epoch)
-        writer.add_scalar('Test/Accuracy', correct.float() / len(cifar100_test_loader.dataset), epoch)
+        writer.add_scalar('Test/Accuracy', correct.float() / n_sampels, epoch)
 
-    return correct.float() / len(cifar100_test_loader.dataset)
+    return correct.float() / n_sampels
 
 
-if __name__ == '__main__':
+def train_val_loop(net, training_loader, test_loader, checkpoint_path, best_acc, resume_epoch):
+    for epoch in range(1, settings.EPOCH + 1):
+        if epoch > args.warm:
+            train_scheduler.step(epoch)
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-net', type=str, required=True, help='net type')
-    parser.add_argument('-gpu', action='store_true', default=False, help='use gpu or not')
-    parser.add_argument('-b', type=int, default=128, help='batch size for dataloader')
-    parser.add_argument('-warm', type=int, default=1, help='warm up training phase')
-    parser.add_argument('-lr', type=float, default=0.1, help='initial learning rate')
-    parser.add_argument('-seed', type=int, default=0, help='random seed')
-    parser.add_argument('-resume', action='store_true', default=False, help='resume training')
+        if args.resume:
+            if epoch <= resume_epoch:
+                continue
 
-    parser.add_argument('-orig-augs', action='store_true', help='is use orig augs')
+        train(net, training_loader, epoch)
+        acc = eval_training(net, test_loader, epoch)
 
-    parser.add_argument('-multiply-data', type=int, default=1, help='multiply the number of datasets')
-    parser.add_argument('-x2-epoch', action='store_true', help='double the number of epochs')
+        # start to save best performance model after learning rate decay to 0.01
+        if epoch > settings.MILESTONES[1] and best_acc < acc:
+            weights_path = checkpoint_path / f'{args.net}-{epoch}-best.pth'
+            print(f'saving weights file to {weights_path}')
+            torch.save(net.state_dict(), weights_path)
+            best_acc = acc
+            continue
 
-    parser.add_argument('-use-distil-aug', action='store_true', help='is use distil augmentation loss')
-    parser.add_argument('-distil-aug-weight', default=1.0, type=float, help='cross loss weight')
-    parser.add_argument('-prob-aug', default=1.0, type=float, help='')
-    parser.add_argument('-mode-aug', default="pad", type=str, help='')
+        if not epoch % settings.SAVE_EPOCH:
+            weights_path = checkpoint_path / f'{args.net}-{epoch}-regular.pth'
+            print(f'saving weights file to {weights_path}')
+            torch.save(net.state_dict(), weights_path)
 
-    parser.add_argument('-use-cross-loss', action='store_true', help='is use cross samples loss')
-    parser.add_argument('-cross-loss-start-epoch', default=0, type=int,
-                        help='milestone for start to use cross samples loss')
-    parser.add_argument('-only-correct-cross-loss', action='store_true', help='is use cross samples loss')
-    parser.add_argument('-cross-loss-weight', default=1.0, type=float, help='cross loss weight')
 
-    parser.add_argument('-use-avg-cross-loss', action='store_true', help='is use cross samples loss')
-    parser.add_argument('-avg-cross-loss-start-epoch', default=0, type=int,
-                        help='milestone for start to use cross samples loss')
-    parser.add_argument('-avg-cross-loss-weight', default=1.0, type=float, help='avg cross loss weight')
-
-    parser.add_argument('-bp-filt-size', type=int, default=None, help='')
-
-    parser.add_argument('-teacher', type=str, default='', help='name of folder with model')
-    parser.add_argument('-distil-function', default='l2', type=str, help='distillation function')
-    parser.add_argument('-distil-weight', default=0.0, type=float, help='distillation loss weight')
-    parser.add_argument('-soft-temper', default=1, type=int, help='soft logits temperature')
-
-    args = parser.parse_args()
-
-    if args.x2_epoch:
-        settings.EPOCH *= 2
-        settings.SAVE_EPOCH *= 2
-
-        settings.MILESTONES[0] *= 2
-        settings.MILESTONES[1] *= 2
-        settings.MILESTONES[2] *= 2
-
-        print("New settings")
-        pprint(vars(settings))
-
-    random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    cudnn.deterministic = True
-    warnings.warn('You have chosen to seed training. '
-                  'This will turn on the CUDNN deterministic setting, '
-                  'which can slow down your training considerably! '
-                  'You may see unexpected behavior when restarting '
-                  'from checkpoints.')
-
-    exp_name = args.net
-
-    if args.bp_filt_size:
-        exp_name += f"_lpf{args.bp_filt_size}"
-
-    exp_name += f"_x{args.multiply_data}_data"
-
-    if args.orig_augs:
-        exp_name += "_orig_augs"
-    else:
-        exp_name += f"_rc_aug_{args.prob_aug}_aug_mode_{args.mode_aug}"
-
-    if args.use_cross_loss:
-        exp_name += f"_log_cross_loss_{args.cross_loss_weight}w"
-
-        if args.cross_loss_start_epoch > 0:
-            exp_name += f"_start{args.cross_loss_start_epoch}"
-
-        if args.only_correct_cross_loss:
-            exp_name += f"_only_correct"
-
-        if args.soft_temper > 1:
-            exp_name += f"_temp{args.soft_temper}"
-
-    if args.use_avg_cross_loss:
-        exp_name += f"_log_avg_cross_loss_{args.avg_cross_loss_weight}w"
-        if args.avg_cross_loss_start_epoch > 0:
-            exp_name += f"_start{args.avg_cross_loss_start_epoch}"
-
-    if args.x2_epoch:
-        exp_name += "_x2_epoch"
-
-    exp_name += "_log_no_w"
-
-    net = get_network(args)
-
-    # data preprocessing:
-    cifar100_training_loader = get_training_dataloader(
-        settings.CIFAR100_TRAIN_MEAN,
-        settings.CIFAR100_TRAIN_STD,
-        num_workers=4,
-        batch_size=args.b,
-        shuffle=True,
-        multiply_data=args.multiply_data,
-        prob_aug=args.prob_aug
-    )
-
-    cifar100_test_loader = get_test_dataloader(
-        settings.CIFAR100_TRAIN_MEAN,
-        settings.CIFAR100_TRAIN_STD,
-        num_workers=4,
-        batch_size=args.b,
-        shuffle=True
-    )
-
-    loss_function = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
-    train_scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=settings.MILESTONES,
-                                                     gamma=0.2)  # learning rate decay
-    iter_per_epoch = len(cifar100_training_loader)
-    warmup_scheduler = WarmUpLR(optimizer, iter_per_epoch * args.warm)
-
-    checkpoint_path = Path(settings.CHECKPOINT_PATH)
-
-    if args.use_distil_aug:
-        checkpoint_path = checkpoint_path / 'distil_aug'
-        checkpoint_path = checkpoint_path / f'w_{args.distil_aug_weight}' \
-                                            f'_func_{args.distil_function}' \
-                                            f'_temp_{args.temperature}_1mlstone'
-
-    checkpoint_path = checkpoint_path / exp_name / f"seed{args.seed}"
-
-    if args.resume:
-        recent_folder = most_recent_folder(
-            str(checkpoint_path),
-            fmt=settings.DATE_FORMAT
-        )
-
-        checkpoint_path = checkpoint_path / recent_folder
-
-    else:
-        checkpoint_path = checkpoint_path / settings.TIME_NOW
-
-    # use tensorboard
-    if not os.path.exists(settings.LOG_DIR):
-        os.mkdir(settings.LOG_DIR)
-
-    # since tensorboard can't overwrite old values
-    # so the only way is to create a new tensorboard log
-    log_dir = settings.LOG_DIR
-    if args.use_distil_aug:
-        log_dir = os.path.join(
-            log_dir, 'distil_aug',
-            f'w_{args.distil_aug_weight}_'
-            f'func_{args.distil_function}_temp_{args.temperature}_1mlstone'
-        )
-
-    writer = SummaryWriter(log_dir=os.path.join(
-        log_dir, exp_name, f"seed{args.seed}", settings.TIME_NOW))
-
-    input_tensor = torch.Tensor(1, 3, 32, 32)
-    if args.gpu:
-        input_tensor = input_tensor.cuda()
-    writer.add_graph(net, input_tensor)
-
-    # create checkpoint folder to save model
-    checkpoint_path.mkdir(exist_ok=True, parents=True)
-
+def resume_network(net, checkpoint_path):
     best_acc = 0.0
     resume_epoch = -1
     if args.resume:
@@ -391,28 +248,76 @@ if __name__ == '__main__':
 
         resume_epoch = last_epoch(str(checkpoint_path))
 
-    for epoch in range(1, settings.EPOCH + 1):
-        if epoch > args.warm:
-            train_scheduler.step(epoch)
+    return net, best_acc, resume_epoch
 
-        if args.resume:
-            if epoch <= resume_epoch:
-                continue
 
-        train(net, epoch)
-        acc = eval_training(net, epoch)
+if __name__ == '__main__':
 
-        # start to save best performance model after learning rate decay to 0.01
-        if epoch > settings.MILESTONES[1] and best_acc < acc:
-            weights_path = checkpoint_path / f'{args.net}-{epoch}-best.pth'
-            print(f'saving weights file to {weights_path}')
-            torch.save(net.state_dict(), weights_path)
-            best_acc = acc
-            continue
+    args = get_args()
 
-        if not epoch % settings.SAVE_EPOCH:
-            weights_path = checkpoint_path / f'{args.net}-{epoch}-regular.pth'
-            print(f'saving weights file to {weights_path}')
-            torch.save(net.state_dict(), weights_path)
+    if args.x2_epoch:
+        settings.EPOCH *= 2
+        settings.SAVE_EPOCH *= 2
+
+        settings.MILESTONES[0] *= 2
+        settings.MILESTONES[1] *= 2
+        settings.MILESTONES[2] *= 2
+
+        print("New settings")
+        pprint(vars(settings))
+
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    cudnn.deterministic = True
+    warnings.warn('You have chosen to seed training. '
+                  'This will turn on the CUDNN deterministic setting, '
+                  'which can slow down your training considerably! '
+                  'You may see unexpected behavior when restarting '
+                  'from checkpoints.')
+
+    exp_name = get_experiment_name(args)
+
+    net = get_network(args)
+
+    # data preprocessing:
+    training_loader, test_loader = get_dataloaders(args)
+
+    loss_function = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
+    train_scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=settings.MILESTONES,
+                                                     gamma=0.2)  # learning rate decay
+    iter_per_epoch = len(training_loader)
+    warmup_scheduler = WarmUpLR(optimizer, iter_per_epoch * args.warm)
+
+    checkpoint_path = get_checkpoint_path(args, exp_name)
+
+    # use tensorboard
+    if not os.path.exists(settings.LOG_DIR):
+        os.mkdir(settings.LOG_DIR)
+
+    # since tensorboard can't overwrite old values
+    # so the only way is to create a new tensorboard log
+    log_dir = settings.LOG_DIR
+    if args.use_distil_aug:
+        log_dir = os.path.join(
+            log_dir, 'distil_aug',
+            f'w_{args.distil_aug_weight}_'
+            f'func_{args.distil_function}_temp_{args.temperature}_1mlstone'
+        )
+
+    writer = SummaryWriter(log_dir=os.path.join(
+        log_dir, exp_name, f"seed{args.seed}", settings.TIME_NOW))
+
+    input_tensor = next(iter(test_loader))[0]
+    if args.gpu:
+        input_tensor = input_tensor.cuda()
+    writer.add_graph(net, input_tensor)
+
+    # create checkpoint folder to save model
+    checkpoint_path.mkdir(exist_ok=True, parents=True)
+
+    net, best_acc, resume_epoch = resume_network(net, checkpoint_path)
+
+    train_val_loop(net, training_loader, test_loader, checkpoint_path, best_acc, resume_epoch)
 
     writer.close()
