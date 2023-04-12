@@ -226,7 +226,7 @@ def train_val_loop(net, training_loader, test_loader, checkpoint_path, best_acc,
             torch.save(net.state_dict(), weights_path)
 
 
-def resume_network(net, checkpoint_path):
+def resume_network(net, test_loader, checkpoint_path):
     best_acc = 0.0
     resume_epoch = -1
     if args.resume:
@@ -236,7 +236,7 @@ def resume_network(net, checkpoint_path):
             print(f'found best acc weights file: {weights_path}')
             print('load best training file to test acc...')
             net.load_state_dict(torch.load(weights_path))
-            best_acc = eval_training(net, tb=False)
+            best_acc = eval_training(net, test_loader, tb=False)
             print(f'best acc is {best_acc:0.2f}')
 
         recent_weights_file = most_recent_weights(str(checkpoint_path))
@@ -316,7 +316,7 @@ if __name__ == '__main__':
     # create checkpoint folder to save model
     checkpoint_path.mkdir(exist_ok=True, parents=True)
 
-    net, best_acc, resume_epoch = resume_network(net, checkpoint_path)
+    net, best_acc, resume_epoch = resume_network(net, test_loader, checkpoint_path)
 
     train_val_loop(net, training_loader, test_loader, checkpoint_path, best_acc, resume_epoch)
 
