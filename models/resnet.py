@@ -143,6 +143,19 @@ class ResNet(nn.Module):
 
         return output
 
+
+def blurpool_kernel(kernel_size):
+    kernel = [1]
+    for _ in range(kernel_size - 1):
+        kernel = [left + right for left, right in zip([0] + kernel, kernel + [0])]
+
+    filt = torch.Tensor(kernel)
+    filt = filt[:, None] * filt[None, :]
+    filt = filt / torch.sum(filt)
+
+    return filt
+
+
 class BlurPool(nn.Module):
     def __init__(self, channels, pad_type='reflect', filt_size=4, stride=2, pad_off=0):
         super(BlurPool, self).__init__()
@@ -156,25 +169,7 @@ class BlurPool(nn.Module):
         self.off = int((self.stride - 1) / 2.)
         self.channels = channels
 
-        if self.filt_size == 1:
-            a = np.array([1., ])
-        elif self.filt_size == 2:
-            a = np.array([1., 1.])
-        elif self.filt_size == 3:
-            a = np.array([1., 2., 1.])
-        elif self.filt_size == 4:
-            a = np.array([1., 3., 3., 1.])
-        elif self.filt_size == 5:
-            a = np.array([1., 4., 6., 4., 1.])
-        elif self.filt_size == 6:
-            a = np.array([1., 5., 10., 10., 5., 1.])
-        elif self.filt_size == 7:
-            a = np.array([1., 6., 15., 20., 15., 6., 1.])
-        else:
-            raise NotImplemented(f"Not implemented for filter size = {self.filt_size}")
-
-        filt = torch.Tensor(a[:, None] * a[None, :])
-        filt = filt / torch.sum(filt)
+        filt = blurpool_kernel(self.filt_size)
         self.register_buffer('filt', filt[None, None, :, :].repeat((self.channels, 1, 1, 1)))
 
         self.pad = get_pad_layer(pad_type)(self.pad_sizes)
@@ -283,7 +278,8 @@ class BottleNeck_BP(nn.Module):
 
         if stride != 1 or in_channels != out_channels * BottleNeck_BP.expansion:
             self.shortcut = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels * BottleNeck_BP.expansion, stride=stride, kernel_size=1, bias=False),
+                nn.Conv2d(in_channels, out_channels * BottleNeck_BP.expansion, stride=stride, kernel_size=1,
+                          bias=False),
                 nn.BatchNorm2d(out_channels * BottleNeck_BP.expansion)  # No ReLU (no convert to BlurPool)
             )
 
